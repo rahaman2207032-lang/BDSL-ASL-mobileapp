@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="bn">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>BdSL Sign Player</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#5b4bdb">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="ui-pro.css?v=1">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">🤟</span>
+    <div><h1>BdSL Sign Player</h1><small id="count">Loading…</small></div></div>
+  <button id="themeBtn" class="icon" aria-label="Switch light/dark">🌓</button>
+</header>
+<p id="banner" class="banner" hidden>Demo data is loaded (fake animations, not real signs). Put your real <b>pack</b> folder next to this page.</p>
+
+<main>
+  <!-- ============ TRANSLATE ============ -->
+  <section id="view-translate" class="view active">
+    <div class="askbar">
+      <input id="q" placeholder="বাংলা বাক্য লিখুন…" autocomplete="off" enterkeyhint="go">
+      <button id="mic" class="icon" aria-label="Speak" hidden>🎤</button>
+      <button id="go" class="primary">Sign</button>
+    </div>
+    <ul id="list" class="cards"></ul>
+
+    <div class="stage-card">
+      <canvas id="stage"></canvas>
+      <div id="empty" class="stage-empty">Type or pick a sentence to see it signed 👆</div>
+      <div id="badge" class="badge" hidden></div>
+      <button id="favBtn" class="icon corner fav" aria-label="Favorite" hidden>☆</button>
+      <button id="mirrorBtn" class="icon corner mirror" aria-label="Mirror view" title="Mirror view (like a mirror)">↔</button>
+    </div>
+
+    <div class="controls">
+      <button id="replay" class="icon" aria-label="Replay">⟲</button>
+      <button id="play" class="primary">Pause</button>
+      <div class="seg" id="speedSeg">
+        <button data-s="0.5">0.5×</button><button data-s="1" class="on">1×</button><button data-s="1.5">1.5×</button>
+      </div>
+      <button id="loopBtn" class="icon on" aria-label="Loop" title="Loop">🔁</button>
+          </div>
+    <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="Position">
+
+    <div class="sentence-card">
+      <p id="sentence"></p>
+      <div id="gloss" class="chips"></div>
+    </div>
+    <div id="recentWrap" hidden><h3>Recent</h3><div id="recent" class="chips"></div></div>
+  </section>
+
+  <!-- ============ BROWSE ============ -->
+  <section id="view-browse" class="view">
+    <div class="askbar">
+      <input id="bq" placeholder="Search sentences…" autocomplete="off">
+      <button id="favOnly" class="chip">☆ Favorites</button>
+    </div>
+    <ul id="blist" class="cards"></ul>
+    <button id="more" class="chip wide" hidden>Show more</button>
+  </section>
+
+  <!-- ============ PRACTICE ============ -->
+  <section id="view-practice" class="view">
+    <div class="score"><span>Score <b id="sc">0</b>/<b id="tot">0</b></span><span>Streak 🔥 <b id="streak">0</b></span></div>
+    <div class="stage-card small"><canvas id="stage2"></canvas></div>
+    <div class="controls">
+      <button id="pReplay" class="icon" aria-label="Replay">⟲</button>
+      <div class="seg" id="pSpeed"><button data-s="0.5">0.5×</button><button data-s="1" class="on">1×</button></div>
+    </div>
+    <h3 class="q">What sentence is being signed?</h3>
+    <div id="opts" class="opts"></div>
+    <p id="feedback" class="feedback"></p>
+    <button id="next" class="primary wide" hidden>Next ▶</button>
+  </section>
+  <!-- ============ CAMERA: SIGN -> TEXT ============ -->
+  <section id="view-sign" class="view">
+    <style>
+/* ---------- camera (sign -> text) ---------- */
+.cam-card { position: relative; width: 100%; aspect-ratio: 3 / 4; max-height: 52vh; margin: 8px auto; border-radius: 24px;
+  overflow: hidden; background: #111; box-shadow: var(--shadow); }
+.cam-card video, .cam-card canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  transform: scaleX(-1); pointer-events: none; }          /* mirrored, like looking in a mirror */
+.cam-card .stage-empty { color: #ddd; }
+.cam-status { position: absolute; left: 12px; top: 12px; padding: 4px 10px; border-radius: 999px;
+  background: rgba(0, 0, 0, .55); color: #fff; font-size: .85rem; }
+.rec-btn { background: var(--bad); color: #fff; font-weight: 600; min-width: 110px; }
+.rec-btn.rec { background: #263238; }
+button:disabled { opacity: .45; }
+.result-row { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+.sign-word { font-size: 2rem; font-weight: 700; }
+.sign-word.unsure { color: var(--warn); }
+.controls.left { justify-content: flex-start; }
+.primary-chip { background: var(--primary); color: #fff; border-color: var(--primary); }
+.hint { margin: 10px 0 0; font-size: .85rem; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+#signSentence { margin: 0 0 8px; font-size: 1.15rem; font-weight: 600; min-height: 1.4em; }
+#signSentence.muted { font-weight: 400; color: var(--muted); }
+    </style>
+    <script>
+      /* If camera.js does not start, say why on screen (no developer tools needed). */
+      (function () {
+        var errs = [];
+        window.addEventListener("error", function (e) { errs.push((e.filename || "").split("/").pop() + " line " + e.lineno + ": " + e.message); });
+        setTimeout(function () {
+          if (window.__cameraReady) return;
+          var tag = document.querySelector('script[src^="camera.js"]');
+          var box = document.createElement("p");
+          box.style.cssText = "margin:8px 0;padding:10px 12px;border-radius:12px;background:#fdecea;color:#8a1c1c;font-size:.9rem";
+          box.textContent = !tag ? "camera.js is not included in index.html. Run: node tools\\add_camera_tab.js"
+            : "camera.js did not start" + (errs.length ? ": " + errs.join(" | ") : ". Check that www\\camera.js exists, then press Ctrl+Shift+R.");
+          var v = document.getElementById("view-sign"); v.insertBefore(box, v.firstChild);
+          if (tag) fetch(tag.getAttribute("src"), { cache: "no-store" }).then(function (r) {
+            if (!r.ok) box.textContent = "www\\camera.js was not found (HTTP " + r.status + "). Copy camera.js from the kit into the www folder.";
+          }).catch(function () {});
+        }, 4000);
+      })();
+    </script>
+    <div class="cam-card">
+      <video id="cam" playsinline muted autoplay></video>
+      <canvas id="camDots"></canvas>
+      <div id="camEmpty" class="stage-empty">Sign a word to the front camera 📷<br><small>Keep your upper body and both hands in view</small></div>
+      <div id="camStatus" class="cam-status" hidden></div>
+    </div>
+    <div class="controls">
+      <button id="camStart" class="primary">Start camera</button>
+      <button id="recBtn" class="rec-btn" disabled>● Record</button>
+      <div class="seg" id="modeSeg"><button data-m="hold" class="on">Hold</button><button data-m="auto">Auto</button></div>
+    </div>
+    <div class="sentence-card">
+      <div class="result-row"><span id="signWord" class="sign-word">—</span><span id="signConf" class="muted"></span></div>
+      <div id="signAlts" class="chips"></div>
+    </div>
+    <h3>Sentence <small id="signReady">· loading model…</small></h3>
+    <div class="sentence-card">
+      <p id="signSentence"></p>
+      <div class="controls left">
+        <button id="sentUndo" class="chip">⌫ Undo</button>
+        <button id="sentClear" class="chip">Clear</button>
+        <button id="sentPlay" class="chip primary-chip">🤟 Show as sign</button>
+      </div>
+      <p id="signHint" class="hint" hidden></p>
+    </div>
+  </section>
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <!-- ============ CALL: VIDEO CALL WITH SIGN <-> TEXT ============ -->
+  <section id="view-call" class="view">
+    <style>
+      /* ---------- Calls home (follows the app's light / dark theme) ---------- */
+      .cx-head { display: flex; align-items: center; justify-content: space-between; margin: 4px 2px 10px; }
+      .cx-head h2 { margin: 0; font-size: 1.45rem; }
+      .cx-status { font-size: .78rem; padding: 4px 10px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); color: var(--muted); max-width: 60%; text-align: right; }
+      .cx-status::before { content: "●"; margin-right: 5px; }
+      .cx-status.on::before { color: #25d366; } .cx-status.off::before { color: var(--warn); }
+      .cx-card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 14px; margin: 10px 0; box-shadow: var(--shadow); }
+      .cx-me { display: flex; gap: 14px; align-items: center; }
+      .cx-me-info { flex: 1; min-width: 0; }
+      .cx-me-info input { width: 100%; box-sizing: border-box; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text);
+        font: inherit; font-size: 1.1rem; font-weight: 600; padding: 4px 0; outline: none; }
+      .cx-code { margin-top: 6px; font-size: .85rem; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+      .cx-code b { font-size: 1.15rem; letter-spacing: .14em; color: var(--text); }
+      .cx-link { background: none; border: 0; box-shadow: none; color: var(--primary); font-weight: 600; min-height: 0; padding: 2px 6px; }
+      .cx-label { font-size: .8rem; color: var(--muted); margin: 0 0 8px; display: block; }
+      .cx-seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 4px; gap: 4px; }
+      .cx-seg button { border-radius: 10px; box-shadow: none; background: transparent; min-height: 42px; font-size: .92rem; color: var(--muted); }
+      .cx-seg button.on { background: var(--card); color: var(--text); font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+      .cx-dial { display: flex; gap: 10px; align-items: center; }
+      .cx-dial input { flex: 1; min-width: 0; height: 52px; border-radius: 26px; border: 1px solid var(--line); background: var(--bg); color: var(--text);
+        font: inherit; font-size: 1.15rem; letter-spacing: .12em; padding: 0 18px; outline: none; }
+      .cx-fab { width: 52px; height: 52px; min-width: 52px; border-radius: 50%; background: #25d366; color: #fff; font-size: 1.3rem; padding: 0; box-shadow: 0 4px 14px rgba(37,211,102,.4); }
+      .cx-sub { margin: 18px 4px 6px; font-size: .9rem; color: var(--muted); }
+      .cx-list { list-style: none; margin: 0; padding: 0; background: var(--card); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
+      .cx-list li { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
+      .cx-list li:last-child { border-bottom: 0; }
+      .cx-list .cx-who { flex: 1; min-width: 0; }
+      .cx-list .cx-who b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .cx-list .cx-who small { color: var(--muted); }
+      .cx-list .cx-who small.miss { color: #e5484d; }
+      .cx-list .cx-again { width: 40px; height: 40px; min-height: 40px; border-radius: 50%; padding: 0; background: transparent; box-shadow: none; color: #128c7e; font-size: 1.15rem; }
+      .cx-empty { text-align: center; color: var(--muted); font-size: .88rem; padding: 18px; }
+
+      /* avatars (initials) */
+      .cx-av { width: 52px; height: 52px; min-width: 52px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 1.2rem; background: #128c7e; }
+      .cx-av.sm { width: 38px; height: 38px; min-width: 38px; font-size: .95rem; }
+      .cx-av.xl { width: 128px; height: 128px; font-size: 3rem; position: relative; }
+      .cx-av.pulse::before, .cx-av.pulse::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 2px solid rgba(255,255,255,.45); animation: cxRing 2s ease-out infinite; }
+      .cx-av.pulse::after { animation-delay: 1s; }
+      @keyframes cxRing { from { transform: scale(1); opacity: .9; } to { transform: scale(1.7); opacity: 0; } }
+
+      /* ---------- full-screen call screens (dark, like WhatsApp) ---------- */
+      .cx-full { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; color: #fff; overflow: hidden;
+        background: radial-gradient(120% 80% at 50% 0%, #1f3b4d 0%, #0b141a 60%); animation: cxIn .25s ease-out; }
+      .cx-full[hidden] { display: none !important; }
+      @keyframes cxIn { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+      .cx-top { text-align: center; padding: calc(18px + env(safe-area-inset-top)) 16px 0; font-size: .82rem; opacity: .8; }
+      .cx-center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 0 20px; }
+      .cx-center h2 { margin: 18px 0 0; font-size: 1.7rem; font-weight: 600; }
+      .cx-center p { margin: 0; opacity: .85; }
+      .cx-pill { display: inline-block; padding: 5px 12px; border-radius: 999px; background: rgba(255,255,255,.12); font-size: .88rem; }
+      .cx-answer { margin: 0 auto 18px; width: min(320px, 86vw); text-align: center; font-size: .82rem; opacity: .9; }
+      .cx-answer .cx-seg { margin-top: 8px; background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.15); }
+      .cx-answer .cx-seg button { color: rgba(255,255,255,.75); }
+      .cx-answer .cx-seg button.on { background: rgba(255,255,255,.95); color: #0b141a; }
+      .cx-actions { display: flex; justify-content: space-evenly; padding: 10px 20px calc(40px + env(safe-area-inset-bottom)); }
+      .cx-actions div { display: grid; justify-items: center; gap: 8px; font-size: .85rem; opacity: .95; }
+      .cx-rb { width: 68px; height: 68px; border-radius: 50%; padding: 0; font-size: 1.6rem; color: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.35); }
+      .cx-rb.red { background: #e5484d; } .cx-rb.green { background: #25d366; animation: cxWiggle 1.4s ease-in-out infinite; }
+      @keyframes cxWiggle { 0%,60%,100% { transform: none; } 70% { transform: rotate(-12deg); } 80% { transform: rotate(12deg); } 90% { transform: rotate(-6deg); } }
+
+      /* ---------- in-call ---------- */
+      #callActive { background: #0b141a; }
+      #remoteVid { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #0b141a; }
+      #remoteWait { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 30px; opacity: .85; }
+      .cx-bar { position: relative; z-index: 3; display: flex; align-items: center; gap: 10px; padding: calc(12px + env(safe-area-inset-top)) 14px 22px;
+        background: linear-gradient(rgba(0,0,0,.55), transparent); }
+      .cx-bar-info { flex: 1; min-width: 0; line-height: 1.25; }
+      .cx-bar-info b { display: block; font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .cx-bar-info small { opacity: .85; font-size: .8rem; }
+      .cx-badge { font-size: .72rem; padding: 4px 9px; border-radius: 999px; background: rgba(37,211,102,.22); border: 1px solid rgba(37,211,102,.5); white-space: nowrap; }
+      #localVid { position: absolute; z-index: 4; right: 12px; top: calc(78px + env(safe-area-inset-top)); width: 27vw; max-width: 140px; aspect-ratio: 3 / 4;
+        object-fit: cover; border-radius: 14px; border: 2px solid rgba(255,255,255,.85); transform: scaleX(-1); background: #222; box-shadow: 0 6px 18px rgba(0,0,0,.4); }
+      #muteBadge { position: absolute; z-index: 5; right: 18px; top: calc(78px + env(safe-area-inset-top) + 6px); width: 26px; height: 26px; border-radius: 50%;
+        background: #e5484d; display: grid; place-items: center; font-size: .8rem; }
+      #callSignBox { position: absolute; z-index: 4; left: 12px; top: calc(78px + env(safe-area-inset-top)); width: 42vw; max-width: 230px; border-radius: 16px; overflow: hidden;
+        background: linear-gradient(160deg, var(--stage1), var(--stage2)); box-shadow: 0 6px 18px rgba(0,0,0,.4); transition: width .3s ease; }
+      #callAvatar { width: 100%; aspect-ratio: 3 / 4; display: block; }
+      #callSignLabel { position: absolute; left: 0; right: 0; bottom: 0; padding: 6px 8px; font-size: .72rem; color: #fff; background: linear-gradient(transparent, rgba(0,0,0,.65)); }
+      .cx-caption { position: absolute; z-index: 3; left: 12px; right: 12px; bottom: 236px; text-align: center; transition: opacity .4s; }
+      .cx-caption span { display: inline-block; max-width: 100%; padding: 10px 16px; border-radius: 16px; background: rgba(0,0,0,.62); font-size: 1.25rem; font-weight: 600; line-height: 1.35; }
+      .cx-caption small { display: block; margin-bottom: 4px; font-size: .75rem; opacity: .8; }
+      .cx-caption:empty, .cx-caption.fade { opacity: 0; }
+      .cx-log { position: absolute; z-index: 6; left: 0; right: 0; bottom: 0; top: 30%; background: #0b141a; border-radius: 22px 22px 0 0; display: flex; flex-direction: column;
+        box-shadow: 0 -10px 30px rgba(0,0,0,.5); animation: cxIn .2s ease-out; }
+      .cx-log header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
+      .cx-log header button { background: none; box-shadow: none; color: #fff; min-height: 0; font-size: 1.2rem; }
+      #callLog { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px;
+        background: #0b141a; }
+      .cx-msg { max-width: 82%; padding: 7px 10px 5px; border-radius: 12px; background: #202c33; align-self: flex-start; }
+      .cx-msg.mine { align-self: flex-end; background: #005c4b; }
+      .cx-msg small { display: block; font-size: .7rem; opacity: .7; } .cx-msg p { margin: 2px 0; font-size: 1rem; }
+      .cx-msg time { display: block; text-align: right; font-size: .66rem; opacity: .6; }
+
+      /* my panel (sign or type) */
+      .cx-panel { position: absolute; z-index: 3; left: 0; right: 0; bottom: calc(92px + env(safe-area-inset-bottom)); padding: 10px 12px 6px;
+        background: linear-gradient(transparent, rgba(0,0,0,.55) 30%); }
+      .cx-draft { display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,.1); border-radius: 22px; padding: 6px 6px 6px 14px; min-height: 44px; }
+      #cDraft { flex: 1; font-size: 1.05rem; font-weight: 600; } #cDraft.muted { font-weight: 400; opacity: .6; font-size: .92rem; }
+      .cx-mini { width: 34px; height: 34px; min-height: 34px; border-radius: 50%; padding: 0; background: rgba(255,255,255,.15); color: #fff; box-shadow: none; }
+      .cx-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 0; }
+      .cx-chips button { min-height: 32px; border-radius: 999px; padding: 0 12px; font-size: .85rem; background: rgba(255,255,255,.15); color: #fff; box-shadow: none; }
+      .cx-signrow { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+      #signState { flex: 1; font-size: .8rem; opacity: .85; }
+      .cx-rec { width: 64px; height: 64px; min-width: 64px; border-radius: 50%; padding: 0; font-size: 1.6rem; background: #fff; color: #0b141a; position: relative; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+      .cx-rec.rec { background: #e5484d; color: #fff; }
+      .cx-rec.rec::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 3px solid rgba(229,72,77,.6); animation: cxRing 1.2s ease-out infinite; }
+      .cx-send { width: 48px; height: 48px; min-width: 48px; border-radius: 50%; padding: 0; background: #25d366; color: #fff; font-size: 1.2rem; box-shadow: none; }
+      .cx-send:disabled { opacity: .35; }
+      .cx-compose { display: flex; align-items: center; gap: 8px; }
+      .cx-compose input { flex: 1; min-width: 0; height: 48px; border-radius: 24px; border: 0; padding: 0 16px; font: inherit; font-size: 1rem; background: #2a3942; color: #fff; outline: none; }
+      .cx-compose input::placeholder { color: rgba(255,255,255,.55); }
+      .cx-micb { width: 48px; height: 48px; min-width: 48px; border-radius: 50%; padding: 0; background: #2a3942; color: #fff; font-size: 1.15rem; box-shadow: none; }
+      .cx-aloud { display: flex; align-items: center; gap: 8px; font-size: .8rem; opacity: .85; margin: 8px 4px 0; }
+
+      /* control bar */
+      .cx-controls { position: absolute; z-index: 5; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-around; align-items: center;
+        padding: 12px 10px calc(16px + env(safe-area-inset-bottom)); background: #1f2c34; border-radius: 22px 22px 0 0; }
+      .cx-cb { display: grid; justify-items: center; gap: 4px; background: none; box-shadow: none; color: #fff; min-height: 0; padding: 0; position: relative; }
+      .cx-cb .i { width: 50px; height: 50px; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.1); font-size: 1.25rem; }
+      .cx-cb small { font-size: .7rem; opacity: .85; }
+      .cx-cb.on .i { background: #fff; color: #0b141a; }
+      .cx-cb.end .i { background: #e5484d; }
+      #chatDot { position: absolute; top: 2px; right: 6px; width: 10px; height: 10px; border-radius: 50%; background: #25d366; }
+
+      /* layouts by who signs / who speaks (set on #callActive) */
+      #callActive.me-sign #speakCtl, #callActive.me-speak #signCtl { display: none; }
+      #callActive.pair-ds #callSignBox { width: 58vw; max-width: 300px; }      /* I sign, they speak: their words become a big sign */
+      #callActive.pair-sd #callSignBox { width: 30vw; max-width: 160px; }      /* I speak, they sign: small preview of what they see */
+      #callActive.pair-sd .cx-caption span { font-size: 1.45rem; }            /* their signed words, large */
+      #callActive.pair-dd .cx-caption span { font-size: 1.45rem; }
+      #toast { z-index: 100 !important; }
+      body.cx-lock { overflow: hidden; }
+    </style>
+
+    <!-- ===== Calls home ===== -->
+    <div id="callHome">
+      <div class="cx-head"><h2>Calls</h2><span id="peerStatus" class="cx-status off">Connecting…</span></div>
+
+      <div class="cx-card cx-me">
+        <div id="meAv" class="cx-av">?</div>
+        <div class="cx-me-info">
+          <input id="myName" placeholder="Your name" autocomplete="off" aria-label="Your name">
+          <div class="cx-code">My code <b id="myCode">------</b><button id="copyCode" class="cx-link">Copy</button></div>
+        </div>
+      </div>
+
+      <div class="cx-card">
+        <span class="cx-label">I communicate by</span>
+        <div class="cx-seg" id="roleSeg"><button data-r="sign">🤟 Signing</button><button data-r="speak">🗣️ Speaking</button></div>
+      </div>
+
+      <div class="cx-card cx-dial">
+        <input id="dialCode" inputmode="numeric" maxlength="6" placeholder="Friend's 6-digit code" autocomplete="off" aria-label="Friend's code">
+        <button id="dialBtn" class="cx-fab" aria-label="Start video call">📹</button>
+      </div>
+
+      <h3 class="cx-sub">Recent</h3>
+      <ul id="callHistory" class="cx-list" hidden></ul>
+      <p id="historyEmpty" class="cx-empty">No calls yet. Share your code with a friend and start a video call.</p>
+    </div>
+
+    <!-- ===== Outgoing call (full screen) ===== -->
+    <div id="callOutgoing" class="cx-full" hidden>
+      <div class="cx-top">🔒 Sign-language video call</div>
+      <div class="cx-center">
+        <div id="outAv" class="cx-av xl pulse">?</div>
+        <h2 id="outName">Calling…</h2>
+        <p id="outState">Calling…</p>
+        <span id="outMode" class="cx-pill"></span>
+      </div>
+      <div class="cx-actions"><div><button id="cancelRing" class="cx-rb red" aria-label="Cancel call">✕</button><span>Cancel</span></div></div>
+    </div>
+
+    <!-- ===== Incoming call (full screen, appears over any tab) ===== -->
+    <div id="callIncoming" class="cx-full" hidden>
+      <div class="cx-top">📹 Incoming sign-language video call</div>
+      <div class="cx-center">
+        <div id="inAv" class="cx-av xl pulse">?</div>
+        <h2 id="inName">Someone</h2>
+        <span id="inMode" class="cx-pill"></span>
+      </div>
+      <div class="cx-answer">Answer as
+        <div class="cx-seg" id="answerSeg"><button data-r="sign">🤟 Signing</button><button data-r="speak">🗣️ Speaking</button></div>
+      </div>
+      <div class="cx-actions">
+        <div><button id="declineBtn" class="cx-rb red" aria-label="Decline">✕</button><span>Decline</span></div>
+        <div><button id="acceptBtn" class="cx-rb green" aria-label="Accept">📹</button><span>Accept</span></div>
+      </div>
+    </div>
+
+    <!-- ===== In a call (full screen) ===== -->
+    <div id="callActive" class="cx-full" hidden>
+      <video id="remoteVid" playsinline autoplay></video>
+      <div id="remoteWait">Connecting video…</div>
+
+      <div class="cx-bar">
+        <div id="callAv" class="cx-av sm">?</div>
+        <div class="cx-bar-info"><b id="callName">Friend</b>
+          <small><span id="callTimer">00:00</span> · <span id="peerModeLbl"></span><span id="peerMutedLbl" hidden> · 🔇 muted</span></small></div>
+        <span id="pairBadge" class="cx-badge"></span>
+      </div>
+
+      <video id="localVid" playsinline autoplay muted></video>
+      <span id="muteBadge" hidden>🔇</span>
+      <div id="callSignBox" hidden><canvas id="callAvatar"></canvas><span id="callSignLabel"></span></div>
+      <div id="callCaption" class="cx-caption"></div>
+
+      <div id="signCtl" class="cx-panel">
+        <div class="cx-draft"><span id="cDraft" class="muted">Your signed words appear here</span><button id="cUndo" class="cx-mini" aria-label="Remove last word">⌫</button></div>
+        <div id="cAlts" class="cx-chips"></div>
+        <div class="cx-signrow"><span id="signState"></span>
+          <button id="cSignBtn" class="cx-rec" aria-label="Record a sign">🤟</button>
+          <button id="cSend" class="cx-send" aria-label="Send">➤</button></div>
+      </div>
+
+      <div id="speakCtl" class="cx-panel">
+        <div class="cx-compose"><input id="cText" placeholder="বাংলায় লিখুন…" autocomplete="off" aria-label="Message">
+          <button id="cMic" class="cx-micb" aria-label="Speak">🎤</button><button id="cTextSend" class="cx-send" aria-label="Send">➤</button></div>
+        <label class="cx-aloud"><input type="checkbox" id="readAloud" checked> Read signed messages aloud</label>
+      </div>
+
+      <div id="callLogWrap" class="cx-log" hidden>
+        <header><b>Conversation</b><button id="closeLog" aria-label="Close">✕</button></header>
+        <div id="callLog"></div>
+      </div>
+
+      <div class="cx-controls">
+        <button id="muteBtn" class="cx-cb"><span class="i">🎤</span><small>Mute</small></button>
+        <button id="roleSwitch" class="cx-cb"><span class="i">⌨️</span><small>Type</small></button>
+        <button id="chatBtn" class="cx-cb"><span class="i">💬</span><small>Chat</small><span id="chatDot" hidden></span></button>
+        <button id="hangBtn" class="cx-cb end"><span class="i">📵</span><small>End</small></button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+
+<nav class="tabs">
+  <button data-v="translate" class="on"><span>🤟</span>Translate</button>
+  <button data-v="browse"><span>📚</span>Browse</button>
+  <button data-v="practice"><span>🎯</span>Practice</button>
+  <button data-v="sign"><span>📷</span>Camera</button>
+  <button data-v="call"><span>📞</span>Call</button>
+</nav>
+
+<script src="core.js"></script>
+<script src="app.js"></script>
+<script src="camera.js?v=8"></script>
+<script src="avatar.js?v=2"></script>
+<script type="importmap">{"imports":{"three":"./lib/three/three.module.min.js","three/addons/":"./lib/three/addons/"}}</script>
+<script type="module" src="avatar3d.js?v=2"></script>
+<script src="lib/peerjs.min.js"></script>
+<script src="sign-engine.js?v=3"></script>
+<script src="call.js?v=10"></script>
+<script src="call-mini.js?v=1"></script>
+<script src="ui-pro.js?v=1"></script>
+<script src="lang.js?v=1"></script>
+</body>
+</html>

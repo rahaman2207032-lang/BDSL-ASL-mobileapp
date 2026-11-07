@@ -1,0 +1,6 @@
+# English engine for the BdSL app. Python 3.10 - 3.12 recommended.
+numpy
+torch                 # the CPU build is enough
+transformers>=4.46    # your Phase-3 T5 (if the tokenizer fails to load, upgrade: pip install -U transformers)
+safetensors
+ai-edge-litert        # runs asl_model.tflite.  On Windows, if this fails:  pip install tensorflow

@@ -1,0 +1,12 @@
+Download these from your Kaggle outputs and drop them anywhere in this folder (sub-folders are fine):
+
+ 1. Kaggle dataset  adibraian/phase-3      ->  motion_s_phase3/best_model/   (config.json, generation_config.json, model.safetensors)
+                                              motion_s_phase3/tokenizer/    (tokenizer.json, tokenizer_config.json)
+                                              motion_s_phase3/phase3_report.json   (optional)
+ 2. Kaggle dataset  adibraian/phase-6-output ->  motion_s_phase6/length_model/best_model.pt
+ 3. Your Phase-8 notebook output             ->  motion_s_phase8/final_model/best_motion_generator.pt
+ 4. Kaggle model    antonygithinji/motion-s-vae-rvq  ->  rvq_vae_best.pth
+ 5. Kaggle dataset  adibraian/phase-5b-output ->  motion_s_phase5/diagnostics/motion_mean_668.npy and motion_std_668.npy
+
+configs/ already holds the generator architecture (Phase-4 model_config.json) and the length calibration (Phase-6 config).
+Start  python server.py  - it prints which files are still missing.

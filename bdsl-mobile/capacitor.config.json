@@ -1,0 +1,11 @@
+{
+  "appId": "com.mobile.bdsl",
+  "appName": "BdSL Sign Player",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  },
+  "server": {
+    "cleartext": true
+  }
+}

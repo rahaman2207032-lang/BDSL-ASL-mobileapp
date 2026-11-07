@@ -1,0 +1,26 @@
+# Downloaded libraries - re-created by "npm install"
+node_modules/
+
+# Android build output - re-created by Android Studio / Gradle
+**/android/app/build/
+**/android/build/
+**/android/.gradle/
+**/android/.idea/
+**/android/local.properties
+**/android/capacitor-cordova-android-plugins/build/
+**/android/app/src/main/assets/public/
+
+# Built apps and signing keys (never upload your keystore!)
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Backups made by the add_*_tab scripts
+*.bak
+
+# Windows / Mac junk
+Thumbs.db
+.DS_Store
+android-keystore/
+*.apk

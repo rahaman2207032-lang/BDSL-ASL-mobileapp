@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="bn">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>BdSL Sign Player</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#5b4bdb">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">🤟</span>
+    <div><h1>BdSL Sign Player</h1><small id="count">Loading…</small></div></div>
+  <button id="themeBtn" class="icon" aria-label="Switch light/dark">🌓</button>
+</header>
+<p id="banner" class="banner" hidden>Demo data is loaded (fake animations, not real signs). Put your real <b>pack</b> folder next to this page.</p>
+
+<main>
+  <!-- ============ TRANSLATE ============ -->
+  <section id="view-translate" class="view active">
+    <div class="askbar">
+      <input id="q" placeholder="বাংলা বাক্য লিখুন…" autocomplete="off" enterkeyhint="go">
+      <button id="mic" class="icon" aria-label="Speak" hidden>🎤</button>
+      <button id="go" class="primary">Sign</button>
+    </div>
+    <ul id="list" class="cards"></ul>
+
+    <div class="stage-card">
+      <canvas id="stage"></canvas>
+      <div id="empty" class="stage-empty">Type or pick a sentence to see it signed 👆</div>
+      <div id="badge" class="badge" hidden></div>
+      <button id="favBtn" class="icon corner fav" aria-label="Favorite" hidden>☆</button>
+      <button id="mirrorBtn" class="icon corner mirror" aria-label="Mirror view" title="Mirror view (like a mirror)">↔</button>
+    </div>
+
+    <div class="controls">
+      <button id="replay" class="icon" aria-label="Replay">⟲</button>
+      <button id="play" class="primary">Pause</button>
+      <div class="seg" id="speedSeg">
+        <button data-s="0.5">0.5×</button><button data-s="1" class="on">1×</button><button data-s="1.5">1.5×</button>
+      </div>
+      <button id="loopBtn" class="icon on" aria-label="Loop" title="Loop">🔁</button>
+          </div>
+    <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="Position">
+
+    <div class="sentence-card">
+      <p id="sentence"></p>
+      <div id="gloss" class="chips"></div>
+    </div>
+    <div id="recentWrap" hidden><h3>Recent</h3><div id="recent" class="chips"></div></div>
+  </section>
+
+  <!-- ============ BROWSE ============ -->
+  <section id="view-browse" class="view">
+    <div class="askbar">
+      <input id="bq" placeholder="Search sentences…" autocomplete="off">
+      <button id="favOnly" class="chip">☆ Favorites</button>
+    </div>
+    <ul id="blist" class="cards"></ul>
+    <button id="more" class="chip wide" hidden>Show more</button>
+  </section>
+
+  <!-- ============ PRACTICE ============ -->
+  <section id="view-practice" class="view">
+    <div class="score"><span>Score <b id="sc">0</b>/<b id="tot">0</b></span><span>Streak 🔥 <b id="streak">0</b></span></div>
+    <div class="stage-card small"><canvas id="stage2"></canvas></div>
+    <div class="controls">
+      <button id="pReplay" class="icon" aria-label="Replay">⟲</button>
+      <div class="seg" id="pSpeed"><button data-s="0.5">0.5×</button><button data-s="1" class="on">1×</button></div>
+    </div>
+    <h3 class="q">What sentence is being signed?</h3>
+    <div id="opts" class="opts"></div>
+    <p id="feedback" class="feedback"></p>
+    <button id="next" class="primary wide" hidden>Next ▶</button>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+
+<nav class="tabs">
+  <button data-v="translate" class="on"><span>🤟</span>Translate</button>
+  <button data-v="browse"><span>📚</span>Browse</button>
+  <button data-v="practice"><span>🎯</span>Practice</button>
+</nav>
+
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
