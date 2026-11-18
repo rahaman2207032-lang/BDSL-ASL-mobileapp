@@ -14,7 +14,15 @@ Put the trained files anywhere inside  models_en/  (sub-folders are fine). Neede
     rvq_vae_best.pth                                             Kaggle model antonygithinji/motion-s-vae-rvq
     motion_mean_668.npy, motion_std_668.npy                      Phase-5b diagnostics/
 The two small config files (generator architecture, length calibration) are already in models_en/configs/.
+
+PIPELINE v2 (your Phase 11 "decode repair") - same trained files, only HOW tokens are picked and decoded changed:
+    temperature 0.7 sampling + repetition penalty 1.15 (seed 42, so the same sentence always gives the same sign)
+    and only the first 2 RVQ levels are used when decoding (the deeper generated levels were noise).
+To use the exact settings your Phase-11 notebook selected, copy its  final_pipeline_v2/decode_settings.json
+anywhere into models_en/ - it overrides the defaults below. To go back to the old Phase-8 decoding, set the
+environment variable  MOTION_S_DECODE=v1  before starting the server.
 """
+import os
 import json
 import re
 from pathlib import Path
@@ -24,6 +32,10 @@ import torch
 import torch.nn as nn
 
 PAD_ID, BOS_ID, EOS_ID = 512, 513, 514
+V2_DEFAULTS = {"sample": True, "temperature": 0.7, "top_k": 0, "top_p": 0.0, "penalty": 1.15,
+               "decode_levels": 2, "savgol_smooth": False, "savgol_window": 9, "savgol_poly": 3, "seed": 42}
+V1_SETTINGS = {"sample": False, "temperature": 1.0, "top_k": 0, "top_p": 0.0, "penalty": 1.0,
+               "decode_levels": 6, "savgol_smooth": False, "savgol_window": 9, "savgol_poly": 3, "seed": 42}
 HERE = Path(__file__).resolve().parent
 ROOT = HERE / "models_en"
 
@@ -151,6 +163,24 @@ class MotionS:
         std = np.load(_find("motion_std_668.npy")).astype(np.float32); std[std < 1e-6] = 1.0
         self.mean, self.std = torch.from_numpy(mean).to(dev), torch.from_numpy(std).to(dev)
 
+        # ---- decoding settings: v2 (Phase 11) by default ----
+        if os.environ.get("MOTION_S_DECODE", "").lower() == "v1":
+            self.decode_cfg, src = dict(V1_SETTINGS), "v1 (Phase-8 greedy, 6 levels)"
+        else:
+            self.decode_cfg, src = dict(V2_DEFAULTS), "v2 (Phase-11 defaults)"
+            ds = _find("decode_settings.json")
+            if ds:
+                saved = json.loads(ds.read_text(encoding="utf-8"))
+                for k in V2_DEFAULTS:
+                    if k in saved and saved[k] is not None: self.decode_cfg[k] = saved[k]
+                if "sample" not in saved: self.decode_cfg["sample"] = bool(saved.get("temperature"))
+                src = f"v2 (from {ds.name})"
+        c = self.decode_cfg
+        self.decode_label = (f"{src}: " + ("sampling T=%g" % c["temperature"] if c["sample"] else "greedy")
+                             + (", rep.penalty %g" % c["penalty"] if c["penalty"] > 1 else "")
+                             + f", {int(c['decode_levels'])} RVQ levels" + (", Savitzky-Golay" if c["savgol_smooth"] else ""))
+        log("  decoding: " + self.decode_label)
+
     # ---------------- the four steps (same code as the notebook) ----------------
     @torch.inference_mode()
     def text_to_gloss(self, text):
@@ -172,26 +202,57 @@ class MotionS:
         if self.calib.get("selected"): v = float(self.calib["slope"]) * v + float(self.calib["intercept"])
         return int(np.clip(np.rint(v), self.bounds[0], self.bounds[1])[0])
 
+    @staticmethod
+    def _filter(logits, top_k=0, top_p=0.0):           # same as the Phase-10/11 notebooks
+        if top_k and top_k > 0:
+            thr = torch.topk(logits, min(int(top_k), logits.shape[-1]), dim=-1).values[..., -1:]
+            logits = logits.masked_fill(logits < thr, -torch.inf)
+        if top_p and 0.0 < top_p < 1.0:
+            srt, order = torch.sort(logits, descending=True, dim=-1)
+            remove = torch.softmax(srt, -1).cumsum(-1) - torch.softmax(srt, -1) > top_p
+            logits = torch.full_like(logits, -torch.inf).scatter_(-1, order, srt.masked_fill(remove, -torch.inf))
+        return logits
+
     @torch.inference_mode()
     def generate_tokens(self, gloss, length):
+        """Same loop as your v2 demo (generate_rvq_tokens_v2); with MOTION_S_DECODE=v1 it is the old greedy loop."""
+        c = self.decode_cfg
         enc = self.tokenizer([gloss], padding=True, truncation=False, return_tensors="pt")
         ids, mask = enc["input_ids"].to(self.device), enc["attention_mask"].to(self.device)
         memory = self.gen.encode(ids, mask)
         hist = torch.full((1, 6, 1), BOS_ID, dtype=torch.long, device=self.device)
         pad = torch.zeros((1, 1), dtype=torch.bool, device=self.device)
-        steps = []
+        rng = torch.Generator(device=self.device).manual_seed(int(c["seed"]))   # = torch.manual_seed(42) per call
+        previous, steps = None, []
         for _ in range(int(length)):
-            choice = self.gen.decode(hist, memory, mask, pad)[:, :, -1, :512].argmax(-1)
-            steps.append(choice.cpu()); hist = torch.cat([hist, choice.unsqueeze(-1)], -1)
+            logits = self.gen.decode(hist, memory, mask, pad)[:, :, -1, :512].float()
+            if previous is not None and c["penalty"] > 1.0:        # CTRL-style repetition penalty, per level
+                got = logits.gather(-1, previous.unsqueeze(-1))
+                logits.scatter_(-1, previous.unsqueeze(-1),
+                                torch.where(got > 0, got / c["penalty"], got * c["penalty"]))
+            if c["sample"]:
+                logits = self._filter(logits / max(float(c["temperature"]), 1e-6), c["top_k"], c["top_p"])
+                choice = torch.multinomial(torch.softmax(logits, -1).reshape(6, -1), 1, generator=rng).reshape(1, 6)
+            else:
+                choice = logits.argmax(-1)
+            steps.append(choice.cpu()); previous = choice
+            hist = torch.cat([hist, choice.unsqueeze(-1)], -1)
             pad = torch.cat([pad, torch.zeros((1, 1), dtype=torch.bool, device=self.device)], 1)
         return torch.stack(steps, -1).squeeze(0).numpy().astype(np.int64)
 
     @torch.inference_mode()
     def decode(self, tokens):
+        """Same as your v2 demo (decode_motion_s_tokens_v2): only the first decode_levels RVQ levels."""
+        c = self.decode_cfg
         ids = torch.as_tensor(tokens, dtype=torch.long, device=self.device)
         latent = torch.zeros((256, tokens.shape[1]), device=self.device)
-        for lv in range(6): latent += self.codebooks[lv][:, ids[lv]]
-        return (self.decoder(latent[None]).squeeze(0).T * self.std + self.mean).cpu().numpy().astype(np.float32)
+        for lv in range(int(c["decode_levels"])): latent += self.codebooks[lv][:, ids[lv]]
+        norm = self.decoder(latent[None]).squeeze(0).T
+        if c["savgol_smooth"] and norm.shape[0] >= int(c["savgol_window"]):
+            from scipy.signal import savgol_filter
+            norm = torch.from_numpy(savgol_filter(norm.cpu().numpy(), int(c["savgol_window"]), int(c["savgol_poly"]),
+                                                  axis=0).astype(np.float32)).to(self.device)
+        return (norm * self.std + self.mean).cpu().numpy().astype(np.float32)
 
     def generate(self, text):
         gloss = self.text_to_gloss(text)

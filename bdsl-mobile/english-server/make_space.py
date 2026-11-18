@@ -15,13 +15,16 @@ colorFrom: indigo
 colorTo: green
 sdk: gradio
 sdk_version: 5.16.1
+python_version: "3.10"
 app_file: app.py
 pinned: false
 ---
 English engine for the BdSL app (Motion-S text -> sign, ASL sign -> word).
 """
 REQS = """torch
-numpy
+numpy<2
+mediapipe==0.10.14
+scipy
 transformers>=4.46
 safetensors
 ai-edge-litert
@@ -30,7 +33,7 @@ ai-edge-litert
 if OUT.exists():
     shutil.rmtree(OUT)
 OUT.mkdir()
-for f in ("app.py", "server.py", "motion_s.py", "skeleton.py", "asl.py"):
+for f in ("app.py", "server.py", "motion_s.py", "skeleton.py", "asl.py", "tracking.py"):
     shutil.copy2(HERE / f, OUT / f)
 skip = shutil.ignore_patterns("__pycache__", "*.pyc", "PUT_YOUR_KAGGLE_FILES_HERE.txt")
 for d in ("asl", "models_en"):

@@ -119,8 +119,17 @@ function aim(name, dir, side, restSide) {
   o.updateMatrixWorld(true);
 }
 
+// an arm bone may point sideways, up, down or forward - but never backwards into / behind the body
+function frontOf(d) {
+  const len = d.length(); if (len < 1e-6) return d;
+  if (d.z < -0.12 * len) { d.z = -0.12 * len; d.setLength(len); }
+  return d;
+}
+
 function draw3D(ctx, pose, f, w, h, opt = {}) {
   const D = pose.data, NP = pose.points, b0 = f * NP * 3, ay = window.bdslBodyAspect ? window.bdslBodyAspect(pose) : 1;
+  // generated English signs carry real depth: use it in full (camera recordings keep the damped body depth)
+  const metric = !!(window.bdslIsMetric && window.bdslIsMetric(pose)), ZB = metric ? 1.0 : Z_POSE;
   const mir = opt.mirror ? -1 : 1;
   // data (x right, y down, z away) -> world (x right, y up, z towards the camera)
   const V = (i, zs) => new THREE.Vector3(mir * D[b0 + i * 3] / S, -D[b0 + i * 3 + 1] / S * ay, -D[b0 + i * 3 + 2] / S * zs);
@@ -134,25 +143,25 @@ function draw3D(ctx, pose, f, w, h, opt = {}) {
   root.updateMatrixWorld(true);
 
   // upper body lean / turn from the shoulder line, head turn from the nose
-  const ls = V(1, Z_POSE), rs = V(2, Z_POSE), across = sub(ls, rs); if (opt.mirror) across.negate();
+  const ls = V(1, ZB), rs = V(2, ZB), across = sub(ls, rs); if (opt.mirror) across.negate();
   const roll = Math.max(-0.25, Math.min(0.25, Math.atan2(across.y, Math.abs(across.x))));
   const yaw = Math.max(-0.35, Math.min(0.35, Math.atan2(-across.z, Math.abs(across.x)) * 0.6));
   const chest = bones.upperChest || bones.chest || bones.spine;
   if (chest) { chest.quaternion.multiply(_q.setFromEuler(new THREE.Euler(0, yaw, roll * (opt.mirror ? -1 : 1) * 0.8))); chest.updateMatrixWorld(true); }
-  const nose = V(0, Z_POSE), mid = ls.clone().add(rs).multiplyScalar(0.5), sw = Math.max(0.3, across.length());
+  const nose = V(0, ZB), mid = ls.clone().add(rs).multiplyScalar(0.5), sw = Math.max(0.3, across.length());
   const hy = Math.max(-0.45, Math.min(0.45, (nose.x - mid.x) / sw * 1.2));
   const hp = Math.max(-0.3, Math.min(0.3, ((nose.y - mid.y) / sw - 0.6) * -0.8));
   if (bones.head) { bones.head.quaternion.multiply(_q.setFromEuler(new THREE.Euler(hp, hy, 0))); bones.head.updateMatrixWorld(true); }
 
   for (const [side, P] of sides) {
-    const S_ = V(P.sh, Z_POSE), E = V(P.el, Z_POSE), W = V(P.wr, Z_POSE);
+    const S_ = V(P.sh, ZB), E = V(P.el, ZB), W = V(P.wr, ZB);
     const H = i => V(P.hand + i, Z_HAND);
     const h0 = H(0), h5 = H(5), h9 = H(9), h17 = H(17);
     const handOk = h9.distanceTo(h0) > 0.03;
     const handFwd = handOk ? sub(h9, h0) : sub(W, E), handSide = handOk ? sub(h17, h5) : null;
     const rh = rest[side + "Hand"];
-    aim(side + "UpperArm", sub(E, S_));
-    aim(side + "LowerArm", sub(W, E), handSide, rh && rh.side);   // forearm carries the palm twist
+    aim(side + "UpperArm", frontOf(sub(E, S_)));
+    aim(side + "LowerArm", frontOf(sub(W, E)), handSide, rh && rh.side);   // forearm carries the palm twist
     aim(side + "Hand", handFwd, handSide, rh && rh.side);
     if (!handOk) continue;
     const F = { Thumb: [1, 2, 3, 4], Index: [5, 6, 7, 8], Middle: [9, 10, 11, 12], Ring: [13, 14, 15, 16], Little: [17, 18, 19, 20] };

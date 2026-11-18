@@ -33,6 +33,7 @@ def _safe(fn, *args):
 
 def api_health():
     return json.dumps({"ok": True, "text2sign": server.STATE["text2sign"], "sign2word": server.STATE["sign2word"],
+                       "frames2word": server.STATE["frames2word"],
                        "fps": skeleton.FPS, "version": 1})
 
 
@@ -49,6 +50,14 @@ def api_sign2word(b64, frames):
     except Exception:
         return json.dumps({"error": "bad data"})
     return _safe(server.sign2word, raw, int(frames or 0))
+
+
+def api_frames2word(frames_json):
+    try:
+        frames = json.loads(frames_json or "[]")
+    except Exception:
+        return json.dumps({"error": "bad data"})
+    return _safe(server.frames2word, frames)
 
 
 if spaces is not None:   # ZeroGPU needs at least one GPU function; the models themselves run on the CPU
@@ -79,6 +88,8 @@ with gr.Blocks(title="BdSL English Engine") as demo:
         gr.Button().click(api_health, None, h_out, api_name="health", concurrency_limit=8)
         gr.Button().click(api_text2sign, t_in, t_out, api_name="text2sign")
         gr.Button().click(api_sign2word, [s_b64, s_n], s_out, api_name="sign2word", concurrency_limit=4)
+        f_in, f_out = gr.Textbox(), gr.Textbox()
+        gr.Button().click(api_frames2word, f_in, f_out, api_name="frames2word", concurrency_limit=2)
 
 demo.queue(max_size=40)
 

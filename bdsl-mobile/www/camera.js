@@ -62,7 +62,7 @@ button:disabled { opacity: .45; }
   let buf543 = [];
   let worker = null, workerReady = false, busy = false, jobId = 0;
   let mode = "hold", recording = false, recStart = 0, buf = [], still = 0, prev = null;
-  let lastTs = 0, lastVideoTime = -1;
+  let lastTs = 0, lastVideoTime = -1, usedDelegate = "", fpsT = [];
   const sentence = [];
   const video = $("cam"), dots = $("camDots"), dctx = dots.getContext("2d");
 
@@ -100,8 +100,16 @@ button:disabled { opacity: .45; }
   }
   function trimIdle(frames) { const [a, b] = trimRange(frames); return frames.slice(a, b + 1); }
 
+  let waiting = null;                               // newest sign recorded while the previous one was being recognised
+  function runWaiting() { if (waiting && !busy) { const w = waiting; waiting = null; classify(w[0], w[1]); } }
+  const anyHand = frames => frames.some(f => { for (let i = POSE_N * 3; i < N_PTS * 3; i++) if (f[i] !== 0) return true; return false; });
+
   function classify(frames, frames543) {
-    if (frames543 && isEn()) return classifyEnglish(frames, frames543);
+    if (frames543 && isEn()) {
+      if (!anyHand(frames)) { $("signWord").textContent = "—"; $("signConf").textContent = "No hands were seen - keep both hands inside the picture"; return; }
+      if (busy) { waiting = [frames, frames543]; $("signConf").textContent = "Next sign is waiting…"; return; }
+      return classifyEnglish(frames, frames543);
+    }
     if (!workerReady) { toast("The word model is still loading. Try again in a moment."); return; }
     if (busy) return;
     frames = trimIdle(frames);
@@ -113,9 +121,21 @@ button:disabled { opacity: .45; }
   async function classifyEnglish(frames, frames543) {
     if (busy) return;
     const [a, b] = trimRange(frames);
-    busy = true; $("signWord").textContent = "…"; $("signConf").textContent = "Recognizing on your PC…";
-    try { showResult(await EnglishEngine.signToWord(frames543.slice(a, b + 1))); }
+    busy = true; $("signWord").textContent = "…"; $("signConf").textContent = "Recognizing…";
+    try { showResult(await EnglishEngine.signToWord(frames543.slice(a, b + 1))); runWaiting(); }
     catch (e) { busy = false; $("signWord").textContent = "—"; $("signConf").textContent = ""; toast("ASL recognition: " + e.message); }
+    runWaiting();
+  }
+
+  async function classifyFrames(shots) {
+    if (busy) { toast("Still recognising the previous sign - try again in a moment."); return; }
+    busy = true; $("signWord").textContent = "…"; $("signConf").textContent = `Recognizing (${shots.length} frames)…`;
+    try { showResult(await EnglishEngine.framesToWord(shots)); }
+    catch (e) {
+      busy = false; $("signWord").textContent = "—";
+      $("signConf").textContent = /hands/i.test(e.message) ? e.message : "";
+      if (!/hands/i.test(e.message)) toast("ASL recognition: " + e.message);
+    }
   }
 
   function showResult(top) {
@@ -184,6 +204,7 @@ button:disabled { opacity: .45; }
       for (const delegate of ["GPU", "CPU"]) {            // GPU is faster; some phones only manage CPU
         try {
           status(`Camera on. Loading ${path.split("/").pop()} (${delegate})…`);
+          usedDelegate = delegate;
           return await withTimeout(Cls.createFromOptions(vision, { baseOptions: { modelAssetPath: path, delegate }, runningMode: "VIDEO", ...opts }),
                                    delegate === "GPU" ? 20000 : 60000, `${path} (${delegate})`);
         } catch (e) { last = e; console.warn("[camera]", delegate, "failed for", path, e); }
@@ -194,7 +215,7 @@ button:disabled { opacity: .45; }
       if (mp.HolisticLandmarker) {                   // same landmarks as the Kaggle ASL data (face + hands + pose)
         try {
           holistic = await make(mp.HolisticLandmarker, "models/holistic_landmarker.task",
-            { minFaceDetectionConfidence: 0.5, minPoseDetectionConfidence: 0.5, minHandLandmarksConfidence: 0.5 });
+            { minFaceDetectionConfidence: 0.5, minPoseDetectionConfidence: 0.5, minHandLandmarksConfidence: 0.5 });   // = the settings the ASL training data used
           return;
         } catch (e) { console.warn("[camera] holistic failed, using pose + hands", e); }
       } else console.warn("[camera] this MediaPipe has no HolisticLandmarker - ASL accuracy is lower (no face points). Update: npm i @mediapipe/tasks-vision@latest && node tools/copy_mediapipe.js");
@@ -275,10 +296,42 @@ button:disabled { opacity: .45; }
     }
   }
 
+  function fps() {                                 // tracking speed over the last second (phones are slower than a PC)
+    const now = performance.now(); fpsT.push(now); while (fpsT.length && now - fpsT[0] > 1000) fpsT.shift();
+    return fpsT.length;
+  }
+
+  // A hand appearing or disappearing also counts as movement (on phones tracking flickers, and the old
+  // "both frames must have the hand" rule then saw a moving hand as standing still and threw the sign away).
+  const handOn = (f, off) => { for (let i = off * 3; i < (off + LH_N) * 3; i++) if (f[i] !== 0) return true; return false; };
+  function enMotion(a, b) {
+    for (const off of [POSE_N, POSE_N + LH_N]) if (handOn(a, off) !== handOn(b, off)) return 1;
+    return handMotion(a, b);
+  }
+  const EN_STILL_MS = 700, EN_MIN_SIGN_MS = 300, EN_MAX_SIGN_MS = 6000, EN_PREROLL = 4;
+  let enSign = null, enPre = [];
+  function onFrameEnglishAuto(f, f543) {
+    const now = performance.now(), moving = prev && enMotion(prev, f) > MOTION_ON;
+    if (!enSign) {
+      enPre.push([f, f543]); if (enPre.length > EN_PREROLL) enPre.shift();
+      if (moving && anyHand([f])) { enSign = { start: now, last: now, fr: enPre.slice() }; enPre = []; status("Signing…"); }
+      return;
+    }
+    if (moving) { enSign.fr.push([f, f543]); enSign.last = now; }
+    const done = now - enSign.last > EN_STILL_MS, tooLong = now - enSign.start > EN_MAX_SIGN_MS;
+    if (!done && !tooLong) return;
+    const keep = enSign.fr;
+    const long = enSign.last - enSign.start >= EN_MIN_SIGN_MS;
+    enSign = null;
+    if (long) classify(keep.map(x => x[0]), keep.map(x => x[1]));
+    status("Sign a word, then hold still");
+  }
+
   function onFrame(f, f543) {
+    if (mode !== "hold" && f543 && isEn()) { onFrameEnglishAuto(f, f543); prev = f; return; }
     if (mode === "hold") {
       if (recording) {
-        buf.push(f); if (f543) buf543.push(f543); status(`● REC  ${buf.length} frames`);
+        buf.push(f); if (f543) buf543.push(f543); status(`● REC  ${buf.length} frames · ${fps()} fps`);
         if (performance.now() - recStart > MAX_SECONDS * 1000) stopRecording();
       }
     } else {
@@ -293,8 +346,29 @@ button:disabled { opacity: .45; }
     prev = f;
   }
 
+  // English + Hold + an engine that can track (Hugging Face Space / server.py with mediapipe 0.10.14):
+  // record small camera pictures instead of tracking on the device, and let the engine find the points with
+  // the same classic MediaPipe Holistic as sign_live.py. Faster on phones too (no tracking while recording).
+  const SNAP_W = 480, SNAP_FPS = 24, SNAP_Q = 0.8;
+  let snaps = [], snapT = 0, snapCanvas = null;
+  const serverHold = () => mode === "hold" && isEn() && window.EnglishEngine && EnglishEngine.serverTracking;
+  function snap() {
+    const now = performance.now();
+    if (now - snapT < 1000 / SNAP_FPS - 4 || video.currentTime === lastVideoTime) return;   // only new camera frames
+    snapT = now; lastVideoTime = video.currentTime;
+    const vw = video.videoWidth, vh = video.videoHeight; if (!vw || !vh) return;
+    const k = Math.min(1, SNAP_W / Math.max(vw, vh));
+    snapCanvas = snapCanvas || document.createElement("canvas");
+    snapCanvas.width = Math.round(vw * k); snapCanvas.height = Math.round(vh * k);
+    snapCanvas.getContext("2d").drawImage(video, 0, 0, snapCanvas.width, snapCanvas.height);   // not mirrored, like sign_live.py
+    snaps.push(snapCanvas.toDataURL("image/jpeg", SNAP_Q));
+    status(`● REC  ${snaps.length} frames · ${fps()} fps`);
+    if (now - recStart > MAX_SECONDS * 1000) stopRecording();
+  }
+
   function loop() {
     if (!running) return;
+    if (recording && serverHold()) { if (video.readyState >= 2) snap(); requestAnimationFrame(loop); return; }
     if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
       lastVideoTime = video.currentTime;
       const ts = lastTs = Math.max(lastTs + 1, Math.round(performance.now()));   // must always increase
@@ -326,7 +400,7 @@ button:disabled { opacity: .45; }
       startWorker();
       status("Asking for camera permission…");
       stream = await withTimeout(navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false }),
+        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } }, audio: false }),
         30000, "The camera did not start (no answer to the permission request)");
       video.srcObject = stream; await video.play();
       $("camEmpty").hidden = true; $("camStart").textContent = "Stop camera";
@@ -334,7 +408,8 @@ button:disabled { opacity: .45; }
       await loadLandmarkers();
       if (!stream) { starting = false; return; }         // user pressed Stop while models were loading
       running = true; $("recBtn").disabled = false;
-      status(mode === "hold" ? "Tap Record, sign one word, tap Stop" : "Sign a word, then hold still");
+      status((mode === "hold" ? "Tap Record, sign one word, tap Stop" : "Sign a word, then hold still")
+             + (usedDelegate === "CPU" ? "  (slow mode: this phone could not use its GPU for tracking)" : ""));
       loop();
     } catch (e) {
       stopCamera();
@@ -362,7 +437,7 @@ button:disabled { opacity: .45; }
   }
 
   function stopCamera() {
-    running = false; recording = false; buf = []; buf543 = []; prev = null; still = 0;
+    running = false; recording = false; buf = []; buf543 = []; prev = null; still = 0; enSign = null; enPre = []; waiting = null;
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = null; video.srcObject = null;
     $("camStart").textContent = "Start camera"; $("recBtn").disabled = true; $("camEmpty").hidden = false;
@@ -372,9 +447,15 @@ button:disabled { opacity: .45; }
   function setRecUI() {
     const b = $("recBtn"); b.textContent = recording ? "■ Stop" : "● Record"; b.classList.toggle("rec", recording);
   }
-  function startRecording() { buf = []; buf543 = []; recording = true; recStart = performance.now(); setRecUI(); }
+  function startRecording() { buf = []; buf543 = []; snaps = []; snapT = 0; recording = true; recStart = performance.now(); setRecUI(); }
   function stopRecording() {
     recording = false; setRecUI();
+    if (snaps.length) {                              // English, tracked on the engine (like sign_live.py)
+      const shots = snaps; snaps = [];
+      if (shots.length < MIN_FRAMES) toast("Too short - keep recording through the whole sign.");
+      else classifyFrames(shots);
+      buf = []; buf543 = []; status("Tap Record, sign one word, tap Stop"); return;
+    }
     if (buf.length >= MIN_FRAMES) classify(buf, pipeLang === "en" ? buf543 : null); else toast("Too short - keep recording through the whole sign.");
     buf = []; buf543 = []; status("Tap Record, sign one word, tap Stop");
   }
@@ -384,7 +465,7 @@ button:disabled { opacity: .45; }
   $("recBtn").onclick = () => { if (!running || mode !== "hold") return; recording ? stopRecording() : startRecording(); };
   $("modeSeg").onclick = e => {
     const b = e.target.closest("button"); if (!b) return;
-    mode = b.dataset.m; recording = false; buf = []; still = 0; setRecUI();
+    mode = b.dataset.m; recording = false; buf = []; still = 0; enSign = null; enPre = []; setRecUI();
     document.querySelectorAll("#modeSeg button").forEach(x => x.classList.toggle("on", x === b));
     $("recBtn").hidden = mode !== "hold";
     if (running) status(mode === "hold" ? "Tap Record, sign one word, tap Stop" : "Sign a word, then hold still");
@@ -405,7 +486,7 @@ button:disabled { opacity: .45; }
 
   // switching language: different models and a different word list
   function readyText() {
-    $("signReady").textContent = isEn() ? "· ASL model on your PC (250 words)" : workerReady ? $("signReady").dataset.bn || "· model ready" : "· loading model…";
+    $("signReady").textContent = isEn() ? "· ASL model (250 words)" : workerReady ? $("signReady").dataset.bn || "· model ready" : "· loading model…";
   }
   let langSeen = null;
   document.addEventListener("lang-change", e => {         // sent by lang.js (also once at start-up)

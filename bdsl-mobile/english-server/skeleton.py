@@ -100,6 +100,91 @@ def smooth(a, k=3):
     return ((c[k:] - c[:-k]) / k).astype(a.dtype)
 
 
+# ---------------- making generated motion continuous ----------------
+# Sampled tokens (pipeline v2) sometimes land far from the previous pose, so the skeleton JUMPS between two
+# frames - usually where one sign hands over to the next. We find those jumps and replace them with a short
+# eased transition, then smooth gently (fingers less than arms so handshapes stay crisp).
+import os
+ARM_IDX = [1, 2, 3, 4, 5, 6]                                  # shoulders, elbows, wrists
+JUMP_FACTOR, JUMP_MIN = 4.0, 0.22                             # jump = 4x the typical speed and > 0.22 shoulder widths/frame
+BLEND = 4                                                     # frames re-drawn on each side of a jump
+
+
+def _gauss(a, sigma):
+    if sigma <= 0 or len(a) < 3: return a
+    r = int(np.ceil(3 * sigma)); x = np.arange(-r, r + 1); w = np.exp(-0.5 * (x / sigma) ** 2); w /= w.sum()
+    b = np.concatenate([a[:1].repeat(r, 0), a, a[-1:].repeat(r, 0)])
+    return np.tensordot(np.stack([b[i:i + len(a)] for i in range(2 * r + 1)]), w, axes=(0, 0)).astype(a.dtype)
+
+
+def find_jumps(pts):
+    """frame indices t where the arms move unusually far between t and t+1"""
+    if len(pts) < 4: return []
+    speed = np.median(np.linalg.norm(np.diff(pts[:, ARM_IDX], axis=0), axis=2), axis=1)   # [T-1]
+    thr = max(JUMP_FACTOR * float(np.median(speed)), JUMP_MIN)
+    return [int(t) for t in np.where(speed > thr)[0]]
+
+
+def repair_jumps(pts, blend=BLEND):
+    """replace a few frames around every jump with an eased (smoothstep) transition between the poses before and after"""
+    pts = pts.copy(); T = len(pts)
+    for t in find_jumps(pts):
+        a, b = max(0, t - blend + 1), min(T - 1, t + blend)
+        if b - a < 2: continue
+        u = (np.arange(a, b + 1) - a) / (b - a); u = u * u * (3 - 2 * u)                 # ease in / ease out
+        pts[a:b + 1] = pts[a][None] * (1 - u)[:, None, None] + pts[b][None] * u[:, None, None]
+    return pts
+
+
+# ---------------- keep the arms out of the avatar's body ----------------
+# The generated skeleton is a slim real person; a resting arm hangs close to the thigh with the forearm angled
+# slightly inward. On the wider 3D avatar that puts the hand INSIDE / BEHIND the body. Low arm points that are
+# inside the body width and not clearly in front of it are moved outward, and no arm point may go behind the back.
+BODY_HALF_W = {"elbow": 0.60, "wrist": 0.66}                  # in shoulder widths from the centre line
+FRONT = -0.20                                                 # z this far in front of the shoulders counts as "in front"
+
+
+def keep_out_of_body(pts):
+    pts = pts.copy()
+    hip_y = float(np.median(pts[:, 7:9, 1])) or 1.4
+    for e, w, hand in ((3, 5, slice(9, 30)), (4, 6, slice(30, 51))):
+        side = 1.0 if np.median(pts[:, e - 2, 0]) >= 0 else -1.0        # which side this arm's shoulder is on
+        for j, key, low_from in ((e, "elbow", 0.30), (w, "wrist", 0.55)):
+            x, y, z = pts[:, j, 0], pts[:, j, 1], pts[:, j, 2]
+            need = side * BODY_HALF_W[key] - x
+            bad = (y > low_from * hip_y) & (side * x < BODY_HALF_W[key]) & (z > FRONT)
+            dx = _gauss(np.where(bad, need, 0.0).astype(np.float32)[:, None], 2.0)[:, 0]   # eased, no popping
+            dx = np.where(side * dx > 0, dx, 0.0)                         # only ever push outward
+            pts[:, j, 0] += dx
+            if j == w: pts[:, hand, 0] += dx[:, None]                       # the hand moves with its wrist
+    arm = [3, 4, 5, 6] + list(range(9, 51))
+    pts[:, arm, 2] = np.minimum(pts[:, arm, 2], 0.0)                       # never behind the back
+    return pts
+
+
+def orient_forward(pts):
+    """Signing happens in front of the body. If the raised wrists are mostly BEHIND the shoulders, the depth
+    axis came out reversed for this clip - flip it so hands are in front (z negative = towards the viewer)."""
+    hip_y = float(np.median(pts[:, 7:9, 1])) or 1.4
+    w = pts[:, [5, 6]]
+    raised = w[..., 1] < 0.7 * hip_y
+    if raised.sum() >= 5 and float(np.median(w[..., 2][raised])) > 0.05:
+        pts = pts.copy(); pts[..., 2] *= -1
+    return pts
+
+
+def make_continuous(pts):
+    if os.environ.get("BDSL_SMOOTH", "1") == "0":                 # old behaviour (3-frame average only)
+        return smooth(pts)
+    pts = keep_out_of_body(repair_jumps(orient_forward(pts)))
+    out = pts.copy()
+    out[:, :9] = _gauss(pts[:, :9], 1.6)                          # nose, shoulders, elbows, wrists, hips
+    out[:, 9:] = _gauss(pts[:, 9:], 1.0)                          # 42 finger points
+    for side, w in ((slice(9, 30), 5), (slice(30, 51), 6)):     # keep each hand attached to its smoothed wrist
+        out[:, side] += (out[:, w] - out[:, side.start])[:, None]
+    return out
+
+
 def points_to_bsl(pts, fps=FPS):
     """[T, 51, 3] -> bytes in the app's .bsl format (int16, 4 shoulder widths = 32767)."""
     pts = np.asarray(pts, dtype=np.float32)
@@ -109,5 +194,5 @@ def points_to_bsl(pts, fps=FPS):
 
 
 def features_to_bsl(motion668, fps=FPS):
-    pts = smooth(joints_to_points(features_to_joints(motion668)))
+    pts = make_continuous(joints_to_points(features_to_joints(motion668)))
     return points_to_bsl(pts, fps), pts

@@ -23,8 +23,23 @@
   // Some recordings come out vertically stretched (camera aspect ratio). Measure once per clip how high the
   // nose sits above the shoulders and squash/stretch the whole clip so the body has human proportions.
   // It is one factor for the whole clip, so hand-to-face contacts stay exactly where they were.
+  // Generated English signs (Motion-S, from the English engine) are a real 3D skeleton with real proportions
+  // and real depth. They are recognised because each hand's wrist point is EXACTLY the arm's wrist point
+  // (camera recordings never are). Those clips are not rescaled, and the 3D avatar uses their full depth.
+  function isMetric(pose) {
+    if (pose._metric !== undefined) return pose._metric;
+    const D = pose.data, NP = pose.points;
+    let same = 0, n = 0;
+    if (NP >= 51) for (let f = 0; f < pose.frames; f += Math.max(1, pose.frames >> 3)) {
+      const b = f * NP * 3, eq = (i, j) => D[b + i * 3] === D[b + j * 3] && D[b + i * 3 + 1] === D[b + j * 3 + 1] && D[b + i * 3 + 2] === D[b + j * 3 + 2];
+      n++; if (eq(5, 9) && eq(6, 30) && (D[b + 15] || D[b + 16])) same++;
+    }
+    return (pose._metric = n > 0 && same === n);
+  }
+
   function bodyAspect(pose) {
     if (pose._ay) return pose._ay;
+    if (isMetric(pose)) return (pose._ay = 1);
     const D = pose.data, NP = pose.points, r = [];
     for (let f = 0; f < pose.frames; f += 2) {
       const b = f * NP * 3, g = i => D[b + i * 3] / 32767 * 4, h = i => D[b + i * 3 + 1] / 32767 * 4;
@@ -168,6 +183,7 @@
   // replace core.js's drawAvatar for the whole app
   window.drawAvatar = drawAvatarPro;
   window.bdslBodyAspect = bodyAspect;
+  window.bdslIsMetric = isMetric;
   window.drawAvatar2D = drawAvatarPro;                       // kept as the fallback for the 3D avatar (avatar3d.js)
   try { drawAvatar = drawAvatarPro; } catch (e) {}           // the global function binding used by Player.draw
 

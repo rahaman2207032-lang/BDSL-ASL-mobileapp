@@ -1,6 +1,8 @@
-# English engine for the BdSL app. Python 3.10 - 3.12 recommended.
-numpy
+# English engine for the BdSL app. Python 3.10 - 3.12 (mediapipe 0.10.14 does not exist for newer Python).
+numpy<2
 torch                 # the CPU build is enough
 transformers>=4.46    # your Phase-3 T5 (if the tokenizer fails to load, upgrade: pip install -U transformers)
 safetensors
+scipy                 # only for the optional Savitzky-Golay smoothing in decode_settings.json
 ai-edge-litert        # runs asl_model.tflite.  On Windows, if this fails:  pip install tensorflow
+mediapipe==0.10.14    # server-side tracking, exactly like sign_live.py

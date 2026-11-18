@@ -93,7 +93,18 @@
         throw e;
       } finally { clearTimeout(t); }
     },
-    health() { return this._fetch("/health", {}, this.hosted() ? 30000 : 15000); },
+    serverTracking: false,                          // true = the engine can find the points itself (like sign_live.py)
+    async health() {
+      const h = await this._fetch("/health", {}, this.hosted() ? 30000 : 15000);
+      this.serverTracking = /^ready/.test(h.frames2word || "");
+      return h;
+    },
+    async framesToWord(jpegs) {                     // jpegs: array of "data:image/jpeg;base64,..." (one sign)
+      const j = this.hosted()
+        ? await this._gradio("frames2word", [JSON.stringify(jpegs)], 120000)
+        : await this._fetch("/api/en/frames2word", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ frames: jpegs }) }, 120000);
+      return j.top || [];
+    },
     async textToPose(text) {
       const key = String(text).trim().toLowerCase();
       if (poseCache.has(key)) return poseCache.get(key);
@@ -116,6 +127,7 @@
   // ------------------------------------------------------------------ styles
   const css = document.createElement("style");
   css.textContent = `
+  #enLearnSeg, #enLearnWords { display: none !important; }   /* ASL Learn tab = quiz only */
   body.lang-en .bn-only, body:not(.lang-en) .en-only { display: none !important; }
   #enQ, #enBq, #enWq { flex: 1; min-width: 0; height: 52px; border-radius: var(--r-md, 16px); border: 1px solid var(--line); box-shadow: var(--shadow); padding: 0 14px 0 46px;
     font-size: 1rem; color: var(--text); background: var(--card) no-repeat 15px 50% / 20px url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8fae' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.5-3.5'/%3E%3C/svg%3E"); }
@@ -165,8 +177,8 @@
 
   const modal = document.createElement("div"); modal.className = "en-modal"; modal.hidden = true;
   modal.innerHTML = `<div><h3>English engine</h3>
-    <p>English signs are made by your generative model and recognised by your ASL model, which run in <b>english-server/server.py</b> on your PC.
-    Start it, then type the address it prints (the phone must be on the same Wi-Fi).</p>
+    <p>English signs are made by your generative model and recognised by your ASL model. Enter your <b>Hugging Face Space</b> address
+    (works anywhere), or the address <b>server.py</b> prints on your PC (phone on the same Wi-Fi).</p>
     <input id="enAddr" placeholder="192.168.0.105:8765" inputmode="url" autocomplete="off">
     <pre id="enTest">—</pre>
     <div class="en-row"><button id="enTestBtn">Test</button><button id="enSave" class="primary">Save</button><button id="enClose">Close</button></div></div>`;
@@ -197,7 +209,7 @@
       engineOk = /ready/.test(h.text2sign);
       const t = /ready/.test(h.text2sign) ? "text→sign ✓" : "text→sign ✗", s = /ready/.test(h.sign2word) ? "sign→word ✓" : "sign→word ✗";
       set(engineOk ? "ok" : "bad", `Engine ${EnglishEngine.addr()} · ${t} · ${s}`);
-    } catch (e) { engineOk = false; set("bad", "English engine offline - start server.py on your PC, then tap Engine"); }
+    } catch (e) { engineOk = false; set("bad", "English engine offline - check the Engine address (Hugging Face Space or server.py on your PC)"); }
   }
 
   // ------------------------------------------------------------------ TRANSLATE (English)
@@ -323,15 +335,15 @@
   ["score", "q", "opts", "feedback", "next"].forEach(k => { const e = vp.querySelector("." + k) || $id(k); if (e) e.classList.add("bn-only"); });
   const learn = document.createElement("div"); learn.className = "en-only";
   learn.innerHTML = `
-    <div class="seg" id="enLearnSeg" style="margin:12px 0 4px"><button data-m="words" class="on">Learn words</button><button data-m="quiz">Quiz</button></div>
-    <div id="enLearnWords">
+    <div class="seg" id="enLearnSeg" hidden style="margin:12px 0 4px"><button data-m="words" class="on">Learn words</button><button data-m="quiz">Quiz</button></div>
+    <div id="enLearnWords" hidden>
       <div class="en-learn-card"><h4 id="enWord">Pick a word</h4><p id="enWordInfo">Watch the generated sign, then tap “Try it” and sign it to the camera.</p>
         <div class="en-row"><button id="enWatch" disabled>▶ Watch again</button><button id="enTry" class="primary" disabled>🤟 Try it</button></div></div>
       <div class="askbar"><input id="enWq" placeholder="Search 250 ASL words…" autocomplete="off"></div>
       <h3>ASL words <small id="enLearned"></small></h3>
       <div id="enWords" class="en-words"></div>
     </div>
-    <div id="enQuiz" hidden>
+    <div id="enQuiz">
       <div class="en-learn-card"><h4>What word is this?</h4><p id="enQuizInfo">Tap Start. The model signs a word - pick the right one.</p>
         <div id="enQuizOpts" class="en-quiz-opts"></div>
         <div class="en-row" style="margin-top:10px"><button id="enQuizNext" class="primary">Start</button><span id="enQuizScore" style="align-self:center;color:var(--muted)"></span></div></div>
@@ -416,7 +428,7 @@
     bn: { translate: ["Translate", "Type or say Bangla and watch it signed"], browse: ["Library", "Every sentence in the dataset"],
           practice: ["Practice", "Watch the sign, pick the sentence"], sign: ["Sign to text", "Sign a word to the camera, build a sentence"] },
     en: { translate: ["Translate", "Type or say English - your generative model signs it (ASL)"], browse: ["Library", "12,000+ English sentences from Motion-S"],
-          practice: ["Learn ASL", "Watch a word, sign it back, take a quiz"], sign: ["Sign to text", "Sign an ASL word (250-word vocabulary)"] },
+          practice: ["Learn ASL", "Watch the signer, pick the right word"], sign: ["Sign to text", "Sign an ASL word (250-word vocabulary)"] },
   };
   function apply() {
     document.body.classList.toggle("lang-en", lang === "en");

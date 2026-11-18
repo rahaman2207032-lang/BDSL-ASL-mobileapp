@@ -6,6 +6,8 @@ server.py - the "English engine" for the BdSL app. Runs on your PC; phones on th
          (your Motion-S generative model, converted to the app's avatar format)
     POST /api/en/sign2word   body = float32 [T, 543, 3] (MediaPipe Holistic, NaN = missing), header X-Frames: T
          -> {"top": [{"word": "dog", "p": 0.91}, ...]}        (your asl_model.tflite)
+    POST /api/en/frames2word {"frames": ["<base64 jpeg>", ...]}   (one sign as camera frames)
+         -> {"top": [...]}  points found by classic MediaPipe Holistic, exactly like sign_live.py (tracking.py)
     GET  /health              -> what is loaded
 
 Run:   python server.py            (default port 8765;  --port 9000  to change)
@@ -26,7 +28,7 @@ import numpy as np
 
 import skeleton
 
-STATE = {"text2sign": "not loaded", "sign2word": "not loaded"}
+STATE = {"text2sign": "not loaded", "sign2word": "not loaded", "frames2word": "not loaded"}
 ENGINES = {"motion": None, "asl": None}
 CACHE = OrderedDict()                     # text -> result (generation takes a few seconds on CPU)
 GEN_LOCK = threading.Lock()
@@ -46,7 +48,7 @@ def load_engines(device):
             STATE["text2sign"] = "loading"
             log("Loading English text -> sign model (Motion-S)…")
             ENGINES["motion"] = motion_s.MotionS(device=device, log=log)
-            STATE["text2sign"] = "ready"
+            STATE["text2sign"] = "ready - " + ENGINES["motion"].decode_label
             log("text -> sign: READY")
     except Exception as e:
         STATE["text2sign"] = "error: " + str(e)
@@ -60,6 +62,13 @@ def load_engines(device):
     except Exception as e:
         STATE["sign2word"] = "error: " + str(e)
         log("sign -> word NOT available:", e)
+    try:
+        import tracking
+        why = tracking.available()
+        STATE["frames2word"] = ("error: " + why) if why else "ready"
+        log("server-side tracking (like sign_live.py):", STATE["frames2word"])
+    except Exception as e:
+        STATE["frames2word"] = "error: " + str(e)
 
 
 def text2sign(text):
@@ -93,6 +102,22 @@ def sign2word(raw, frames):
     return {"top": top}
 
 
+def frames2word(b64_frames):
+    import tracking
+    eng = ENGINES["asl"]
+    if eng is None:
+        raise RuntimeError("sign -> word model is " + STATE["sign2word"])
+    if not STATE["frames2word"].startswith("ready"):
+        raise RuntimeError("server-side tracking is " + STATE["frames2word"])
+    jpegs = [base64.b64decode(f.split(",")[-1]) for f in b64_frames][:400]
+    t0 = time.time()
+    seq, n_hand = tracking.frames_to_543(jpegs)
+    top = eng.predict(seq)
+    log(f"frames2word {len(jpegs)} frames -> {len(seq)} kept, hands in {n_hand}, {int((time.time() - t0) * 1000)} ms -> "
+        + ", ".join(f"{t['word']} {t['p']:.0%}" for t in top[:3]))
+    return {"top": top}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "BdSLEnglish/1.0"
 
@@ -116,6 +141,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.split("?")[0] in ("/", "/health"):
             return self._send(200, {"ok": True, "text2sign": STATE["text2sign"], "sign2word": STATE["sign2word"],
+                                    "frames2word": STATE["frames2word"],
                                     "fps": skeleton.FPS, "version": 1})
         self._send(404, {"error": "not found"})
 
@@ -123,12 +149,14 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            if n > 20_000_000: return self._send(413, {"error": "too large"})
+            if n > 40_000_000: return self._send(413, {"error": "too large"})
             raw = self.rfile.read(n)
             if path == "/api/en/text2sign":
                 text = str(json.loads(raw.decode("utf-8") or "{}").get("text", "")).strip()[:300]
                 if not text: return self._send(400, {"error": "empty text"})
                 return self._send(200, text2sign(text))
+            if path == "/api/en/frames2word":
+                return self._send(200, frames2word(json.loads(raw.decode("utf-8") or "{}").get("frames") or []))
             if path == "/api/en/sign2word":
                 return self._send(200, sign2word(raw, int(self.headers.get("X-Frames") or 0)))
             self._send(404, {"error": "not found"})
